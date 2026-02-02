@@ -89,6 +89,7 @@ jobs:
           platforms: linux/s390x
           push: true
           tags: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:${{ steps.version.outputs.nginx_base_version }}-s390x
+          provenance: false
           cache-from: type=gha,scope=nginx-s390x
           cache-to: type=gha,mode=max,scope=nginx-s390x
 
@@ -128,6 +129,7 @@ jobs:
           build-args: |
             TARGETARCH=s390x
             BASE_IMAGE=${{ needs.build-s390x-base.outputs.base_image }}-s390x
+          provenance: false
           cache-from: type=gha,scope=controller-s390x
           cache-to: type=gha,mode=max,scope=controller-s390x
 
@@ -175,6 +177,7 @@ jobs:
           tags: ${{ env.REGISTRY }}/${{ env.CERTGEN_IMAGE_NAME }}:${{ steps.certgen-version.outputs.certgen_tag }}-s390x
           build-args: |
             GOLANG_VERSION=${{ steps.certgen-version.outputs.golang_version }}
+          provenance: false
           cache-from: type=gha,scope=certgen-s390x
           cache-to: type=gha,mode=max,scope=certgen-s390x
 
