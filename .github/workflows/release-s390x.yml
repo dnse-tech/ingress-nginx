@@ -21,7 +21,7 @@ env:
   BASE_IMAGE_NAME: ${{ github.repository_owner }}/nginx
   CERTGEN_IMAGE_NAME: ${{ github.repository_owner }}/mirrored-ingress-nginx-kube-webhook-certgen
   UPSTREAM_IMAGE: rancher/nginx-ingress-controller
-  UPSTREAM_CERTGEN_IMAGE: rancher/kube-webhook-certgen
+  UPSTREAM_CERTGEN_IMAGE: rancher/mirrored-ingress-nginx-kube-webhook-certgen
 
 jobs:
   build-s390x-base:
