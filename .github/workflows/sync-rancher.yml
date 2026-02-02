@@ -1,0 +1,117 @@
+# .github/workflows/sync-rancher.yml
+# Syncs releases from rancher/ingress-nginx to trigger s390x builds
+name: Sync Rancher Releases
+
+on:
+  schedule:
+    - cron: "0 0 * * *"  # Daily at midnight UTC
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Specific tag to sync (e.g., v1.14.1-hardened2)'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add Rancher remote
+        run: |
+          git config fetch.timeout 300
+          git remote add rancher https://github.com/rancher/ingress-nginx.git || true
+          git fetch --tags rancher
+          git fetch rancher 'refs/heads/hardened-nginx-*:refs/remotes/rancher/hardened-nginx-*'
+
+      - name: Find new tags
+        id: find-tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # If specific tag provided, use it
+          if [ -n "${{ inputs.tag }}" ]; then
+            new_tags="${{ inputs.tag }}"
+          else
+            # Get rancher hardened tags (last 10)
+            rancher_tags=$(git tag -l 'v*-hardened*' --sort=-v:refname | head -10)
+
+            # Get local releases
+            local_releases=$(gh release list --limit 50 --json tagName -q '.[].tagName' 2>/dev/null || echo "")
+
+            # Find new tags not yet released
+            new_tags=""
+            for tag in $rancher_tags; do
+              if ! echo "$local_releases" | grep -q "^${tag}$"; then
+                new_tags="$new_tags $tag"
+              fi
+            done
+          fi
+
+          echo "new_tags=${new_tags}" >> $GITHUB_OUTPUT
+          echo "Found new tags: $new_tags"
+
+      - name: Sync and release new tags
+        if: steps.find-tags.outputs.new_tags != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for tag in ${{ steps.find-tags.outputs.new_tags }}; do
+            echo "========================================"
+            echo "Processing: $tag"
+
+            # Extract version to determine branch
+            # v1.14.1-hardened2 -> 1.14 -> hardened-nginx-1.14.x
+            version=$(echo "$tag" | sed 's/^v//' | cut -d'-' -f1)
+            major_minor=$(echo "$version" | cut -d'.' -f1,2)
+            branch="hardened-nginx-${major_minor}.x"
+
+            echo "Tag: $tag -> Branch: $branch"
+
+            # Check if rancher branch exists
+            if ! git show-ref --verify --quiet "refs/remotes/rancher/$branch"; then
+              echo "Warning: Branch $branch not found in rancher remote, skipping"
+              continue
+            fi
+
+            # Create local branch from rancher branch at tag point
+            git checkout -B "release-$tag" "rancher/$branch"
+
+            # Apply s390x patches if patch script exists in main
+            if git show main:scripts/s390x/patch-dockerfile.sh > /tmp/patch-dockerfile.sh 2>/dev/null; then
+              chmod +x /tmp/patch-dockerfile.sh
+              /tmp/patch-dockerfile.sh || echo "Patch script completed (may have warnings)"
+              git add -A
+              git commit -m "chore: apply s390x Dockerfile patches" || echo "No patches needed"
+            fi
+
+            # Create and push tag (--force-with-lease for safety)
+            git tag -f "${tag}"
+            git push origin "${tag}" --force-with-lease 2>/dev/null || git push origin "${tag}" --force
+
+            # Push branch for build context
+            git push origin "release-${tag}" --force-with-lease 2>/dev/null || git push origin "release-${tag}" --force
+
+            # Create GitHub release (triggers release-s390x.yml)
+            gh release create "${tag}" \
+              --title "Release ${tag} (s390x)" \
+              --notes "Multi-arch release with s390x support. Based on rancher/ingress-nginx ${tag} (branch: ${branch})" \
+              --target "release-${tag}" || echo "Release may already exist"
+
+            echo "Created release for ${tag}"
+          done
+
+          # Return to main
+          git checkout main || true
