@@ -1,0 +1,386 @@
+name: Release s390x Multi-arch
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g., v1.14.1-hardened2)"
+        required: true
+      force_base_rebuild:
+        description: "Force rebuild base image even if exists"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/nginx-ingress-controller
+  BASE_IMAGE_NAME: ${{ github.repository_owner }}/nginx
+  CERTGEN_IMAGE_NAME: ${{ github.repository_owner }}/mirrored-ingress-nginx-kube-webhook-certgen
+  UPSTREAM_IMAGE: rancher/nginx-ingress-controller
+  UPSTREAM_CERTGEN_IMAGE: rancher/mirrored-ingress-nginx-kube-webhook-certgen
+  RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+
+jobs:
+  # Check if base image already exists
+  check-base-image:
+    runs-on: ubuntu-latest
+    outputs:
+      exists: ${{ steps.check.outputs.exists }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Extract version
+        id: version
+        run: echo "tag=${{ env.RELEASE_TAG }}" >> $GITHUB_OUTPUT
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if base image exists
+        id: check
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          IMAGE="${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:${TAG}-s390x"
+
+          if [ "${{ github.event.inputs.force_base_rebuild }}" == "true" ]; then
+            echo "Force rebuild requested"
+            echo "exists=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "Base image already exists: $IMAGE"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Base image not found: $IMAGE"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+  # Build s390x nginx base image (skip if exists)
+  build-s390x-base:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    needs: check-base-image
+    if: needs.check-base-image.outputs.exists == 'false'
+    outputs:
+      tag: ${{ needs.check-base-image.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/s390x
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push s390x nginx base
+        uses: docker/build-push-action@v6
+        with:
+          context: ./images/nginx/rootfs
+          file: ./images/nginx/rootfs/Dockerfile
+          platforms: linux/s390x
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:${{ needs.check-base-image.outputs.tag }}-s390x
+          cache-from: type=gha,scope=nginx-s390x
+          cache-to: type=gha,mode=max,scope=nginx-s390x
+
+  # Build s390x binary (runs in parallel)
+  build-s390x-binary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: check-base-image
+    outputs:
+      tag: ${{ needs.check-base-image.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/s390x
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build binary
+        run: GIT_TAG=${{ needs.check-base-image.outputs.tag }} ARCH=s390x ./scripts/build-binary
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-s390x
+          path: rootfs/bin/s390x
+          retention-days: 1
+
+  # Build s390x kube-webhook-certgen (runs in parallel, no base image dependency)
+  build-s390x-certgen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: check-base-image
+    outputs:
+      tag: ${{ needs.check-base-image.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Get Go version
+        run: echo "GOLANG_VERSION=$(cat GOLANG_VERSION)" >> $GITHUB_ENV
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/s390x
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get certgen version
+        id: certgen-version
+        run: |
+          CERTGEN_TAG=$(cat images/kube-webhook-certgen/TAG)
+          echo "tag=$CERTGEN_TAG" >> $GITHUB_OUTPUT
+
+      - name: Build and push s390x kube-webhook-certgen
+        uses: docker/build-push-action@v6
+        with:
+          context: ./images/kube-webhook-certgen/rootfs
+          file: ./images/kube-webhook-certgen/rootfs/Dockerfile
+          platforms: linux/s390x
+          push: true
+          build-args: |
+            GOLANG_VERSION=${{ env.GOLANG_VERSION }}
+          tags: ${{ env.REGISTRY }}/${{ env.CERTGEN_IMAGE_NAME }}:${{ steps.certgen-version.outputs.tag }}-s390x
+          cache-from: type=gha,scope=certgen-s390x
+          cache-to: type=gha,mode=max,scope=certgen-s390x
+
+  # Build s390x controller image
+  build-s390x-controller:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: [check-base-image, build-s390x-base, build-s390x-binary]
+    if: always() && needs.build-s390x-binary.result == 'success' && (needs.build-s390x-base.result == 'success' || needs.build-s390x-base.result == 'skipped')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-s390x
+          path: ./rootfs/bin/s390x
+
+      - name: Fix binary permissions
+        run: chmod +x ./rootfs/bin/s390x/*
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/s390x
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push s390x controller
+        uses: docker/build-push-action@v6
+        with:
+          context: ./rootfs
+          file: ./rootfs/Dockerfile
+          platforms: linux/s390x
+          push: true
+          build-args: |
+            TARGETARCH=s390x
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:${{ needs.check-base-image.outputs.tag }}-s390x
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.check-base-image.outputs.tag }}-s390x
+          cache-from: type=gha,scope=controller-s390x
+          cache-to: type=gha,mode=max,scope=controller-s390x
+
+  # Create controller multi-arch manifest
+  create-controller-manifest:
+    runs-on: ubuntu-latest
+    needs: [check-base-image, build-s390x-controller]
+    if: always() && needs.build-s390x-controller.result == 'success'
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Wait for and pull upstream images
+        id: upstream
+        run: |
+          TAG="${{ needs.check-base-image.outputs.tag }}"
+          MAX_RETRIES=10
+          RETRY_DELAY=60
+
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $i/$MAX_RETRIES: Checking upstream controller image..."
+
+            if docker pull --platform linux/amd64 ${{ env.UPSTREAM_IMAGE }}:$TAG 2>/dev/null && \
+               docker pull --platform linux/arm64 ${{ env.UPSTREAM_IMAGE }}:$TAG 2>/dev/null; then
+              echo "Upstream controller images available"
+
+              docker tag ${{ env.UPSTREAM_IMAGE }}:$TAG ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$TAG-amd64
+              docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$TAG-amd64
+              docker tag ${{ env.UPSTREAM_IMAGE }}:$TAG ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$TAG-arm64
+              docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$TAG-arm64
+
+              echo "ready=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            if [ $i -lt $MAX_RETRIES ]; then
+              echo "Upstream images not ready, waiting ${RETRY_DELAY}s..."
+              sleep $RETRY_DELAY
+            fi
+          done
+
+          echo "Upstream images not available after $MAX_RETRIES attempts"
+          echo "ready=false" >> $GITHUB_OUTPUT
+          exit 1
+
+      - name: Create controller multi-arch manifest
+        if: steps.upstream.outputs.ready == 'true'
+        run: |
+          TAG="${{ needs.check-base-image.outputs.tag }}"
+          FULL_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+
+          docker buildx imagetools create \
+            -t $FULL_IMAGE:$TAG \
+            $FULL_IMAGE:$TAG-amd64 \
+            $FULL_IMAGE:$TAG-arm64 \
+            $FULL_IMAGE:$TAG-s390x
+
+          echo "Controller multi-arch manifest created: $FULL_IMAGE:$TAG"
+
+      - name: Verify controller manifest
+        if: steps.upstream.outputs.ready == 'true'
+        run: |
+          echo "## Controller Manifest" >> $GITHUB_STEP_SUMMARY
+          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.check-base-image.outputs.tag }} >> $GITHUB_STEP_SUMMARY
+
+  # Create certgen multi-arch manifest (runs in parallel with controller manifest)
+  create-certgen-manifest:
+    runs-on: ubuntu-latest
+    needs: [check-base-image, build-s390x-certgen]
+    if: always() && needs.build-s390x-certgen.result == 'success'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Get certgen version
+        id: certgen-version
+        run: |
+          CERTGEN_TAG=$(cat images/kube-webhook-certgen/TAG)
+          echo "tag=$CERTGEN_TAG" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Wait for and pull upstream certgen images
+        id: upstream
+        run: |
+          TAG="${{ steps.certgen-version.outputs.tag }}"
+          MAX_RETRIES=10
+          RETRY_DELAY=60
+
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $i/$MAX_RETRIES: Checking upstream certgen image..."
+
+            if docker pull --platform linux/amd64 ${{ env.UPSTREAM_CERTGEN_IMAGE }}:$TAG 2>/dev/null && \
+               docker pull --platform linux/arm64 ${{ env.UPSTREAM_CERTGEN_IMAGE }}:$TAG 2>/dev/null; then
+              echo "Upstream certgen images available"
+
+              docker tag ${{ env.UPSTREAM_CERTGEN_IMAGE }}:$TAG ${{ env.REGISTRY }}/${{ env.CERTGEN_IMAGE_NAME }}:$TAG-amd64
+              docker push ${{ env.REGISTRY }}/${{ env.CERTGEN_IMAGE_NAME }}:$TAG-amd64
+              docker tag ${{ env.UPSTREAM_CERTGEN_IMAGE }}:$TAG ${{ env.REGISTRY }}/${{ env.CERTGEN_IMAGE_NAME }}:$TAG-arm64
+              docker push ${{ env.REGISTRY }}/${{ env.CERTGEN_IMAGE_NAME }}:$TAG-arm64
+
+              echo "ready=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            if [ $i -lt $MAX_RETRIES ]; then
+              echo "Upstream certgen images not ready, waiting ${RETRY_DELAY}s..."
+              sleep $RETRY_DELAY
+            fi
+          done
+
+          echo "Upstream certgen images not available after $MAX_RETRIES attempts"
+          echo "ready=false" >> $GITHUB_OUTPUT
+          exit 1
+
+      - name: Create certgen multi-arch manifest
+        if: steps.upstream.outputs.ready == 'true'
+        run: |
+          TAG="${{ steps.certgen-version.outputs.tag }}"
+          FULL_IMAGE="${{ env.REGISTRY }}/${{ env.CERTGEN_IMAGE_NAME }}"
+
+          docker buildx imagetools create \
+            -t $FULL_IMAGE:$TAG \
+            $FULL_IMAGE:$TAG-amd64 \
+            $FULL_IMAGE:$TAG-arm64 \
+            $FULL_IMAGE:$TAG-s390x
+
+          echo "Certgen multi-arch manifest created: $FULL_IMAGE:$TAG"
+
+      - name: Verify certgen manifest
+        if: steps.upstream.outputs.ready == 'true'
+        run: |
+          echo "## Certgen Manifest" >> $GITHUB_STEP_SUMMARY
+          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.CERTGEN_IMAGE_NAME }}:${{ steps.certgen-version.outputs.tag }} >> $GITHUB_STEP_SUMMARY

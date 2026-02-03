@@ -60,7 +60,8 @@ RUN bash -xeu -c ' \
   # Put libs of newer modules under `/modules_mount/<other>/lib` and add that path below
   # Configure for all architectures
   && echo "/lib:/usr/lib:/usr/local/lib:/modules_mount/etc/nginx/modules/otel" > /etc/ld-musl-x86_64.path \
-  && echo "/lib:/usr/lib:/usr/local/lib:/modules_mount/etc/nginx/modules/otel" > /etc/ld-musl-aarch64.path
+  && echo "/lib:/usr/lib:/usr/local/lib:/modules_mount/etc/nginx/modules/otel" > /etc/ld-musl-aarch64.path \
+  && echo "/lib:/usr/lib:/usr/local/lib:/modules_mount/etc/nginx/modules/otel" > /etc/ld-musl-s390x.path
   
   
 RUN setcap    cap_net_bind_service=+ep /nginx-ingress-controller \
