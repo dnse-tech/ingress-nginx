@@ -110,9 +110,12 @@ clean-chroot-image: ## Removes local image
 	@docker rmi -f $(REGISTRY)/controller-chroot:$(TAG) || true
 
 
+# E2E_IMAGE can be overridden for s390x builds (e.g., ghcr.io/dnse-tech/hardened-build-base:v1.25.6b1)
+E2E_IMAGE ?= rancher/hardened-build-base:v1.25.6b1
+
 .PHONY: build
 build:  ## Build ingress controller, debug tool and pre-stop hook.
-	E2E_IMAGE=rancher/hardened-build-base:v1.25.6b1 USE_SHELL=/bin/sh build/run-in-docker.sh \
+	E2E_IMAGE=$(E2E_IMAGE) USE_SHELL=/bin/sh build/run-in-docker.sh \
 		MAC_OS=$(MAC_OS) \
 		PKG=$(PKG) \
 		ARCH=$(ARCH) \
