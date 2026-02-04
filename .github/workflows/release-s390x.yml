@@ -25,6 +25,8 @@ env:
   UPSTREAM_IMAGE: rancher/nginx-ingress-controller
   UPSTREAM_CERTGEN_IMAGE: rancher/mirrored-ingress-nginx-kube-webhook-certgen
   RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+  # s390x build uses dnse-tech fork of hardened-build-base (rancher version lacks s390x)
+  S390X_BUILD_IMAGE: ghcr.io/dnse-tech/hardened-build-base:v1.25.6b1
 
 jobs:
   # Check if base image already exists
@@ -33,10 +35,23 @@ jobs:
     outputs:
       exists: ${{ steps.check.outputs.exists }}
       tag: ${{ steps.version.outputs.tag }}
+      nginx_tag: ${{ steps.nginx-version.outputs.tag }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
       - name: Extract version
         id: version
         run: echo "tag=${{ env.RELEASE_TAG }}" >> $GITHUB_OUTPUT
+
+      - name: Get nginx base image tag
+        id: nginx-version
+        run: |
+          NGINX_TAG=$(cat images/nginx/TAG)
+          echo "tag=$NGINX_TAG" >> $GITHUB_OUTPUT
+          echo "Nginx base image tag: $NGINX_TAG"
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -48,7 +63,7 @@ jobs:
       - name: Check if base image exists
         id: check
         run: |
-          TAG="${{ steps.version.outputs.tag }}"
+          TAG="${{ steps.nginx-version.outputs.tag }}"
           IMAGE="${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:${TAG}-s390x"
 
           if [ "${{ github.event.inputs.force_base_rebuild }}" == "true" ]; then
@@ -72,7 +87,7 @@ jobs:
     needs: check-base-image
     if: needs.check-base-image.outputs.exists == 'false'
     outputs:
-      tag: ${{ needs.check-base-image.outputs.tag }}
+      nginx_tag: ${{ needs.check-base-image.outputs.nginx_tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -101,7 +116,7 @@ jobs:
           file: ./images/nginx/rootfs/Dockerfile
           platforms: linux/s390x
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:${{ needs.check-base-image.outputs.tag }}-s390x
+          tags: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:${{ needs.check-base-image.outputs.nginx_tag }}-s390x
           cache-from: type=gha,scope=nginx-s390x
           cache-to: type=gha,mode=max,scope=nginx-s390x
 
@@ -126,8 +141,16 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Login to GHCR to pull private dnse-tech/hardened-build-base image
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build binary
-        run: GIT_TAG=${{ needs.check-base-image.outputs.tag }} ARCH=s390x ./scripts/build-binary
+        run: GIT_TAG=${{ needs.check-base-image.outputs.tag }} ARCH=s390x E2E_IMAGE=${{ env.S390X_BUILD_IMAGE }} ./scripts/build-binary
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
@@ -231,7 +254,7 @@ jobs:
           push: true
           build-args: |
             TARGETARCH=s390x
-            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:${{ needs.check-base-image.outputs.tag }}-s390x
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:${{ needs.check-base-image.outputs.nginx_tag }}-s390x
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.check-base-image.outputs.tag }}-s390x
           cache-from: type=gha,scope=controller-s390x
           cache-to: type=gha,mode=max,scope=controller-s390x
