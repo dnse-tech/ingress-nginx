@@ -133,11 +133,11 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
 
-      # Overlay patched build scripts from branch (s390x E2E_IMAGE support)
-      - name: Update build scripts from branch
+      # Overlay patched build files from branch (s390x E2E_IMAGE support)
+      - name: Update build files from branch
         run: |
           git fetch origin ${{ github.ref_name }}
-          git checkout origin/${{ github.ref_name }} -- scripts/ build/
+          git checkout origin/${{ github.ref_name }} -- scripts/ build/ Makefile
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
