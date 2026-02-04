@@ -7,17 +7,17 @@ cd $(dirname $0)/..
 # If #GIT_TAG is present, then we build binaries
 if [[ -n "$GIT_TAG" ]] && [ "$GITHUB_ACTIONS" = "true" ]; then
     # E2E_IMAGE can be overridden for s390x builds (dnse-tech/hardened-build-base)
-    E2E_IMAGE_ARG=""
+    # Export so make inherits it
     if [[ -n "$E2E_IMAGE" ]]; then
-        E2E_IMAGE_ARG="E2E_IMAGE=$E2E_IMAGE"
+        export E2E_IMAGE
     fi
 
     if [[ -n "$ARCH" ]]; then
-        ARCH=$ARCH PLATFORM=$ARCH $E2E_IMAGE_ARG make build
+        ARCH=$ARCH PLATFORM=$ARCH make build
     else
         # Build for all architectures
-        ARCH=amd64 PLATFORM=amd64 $E2E_IMAGE_ARG make build
-        ARCH=arm64 PLATFORM=arm64 $E2E_IMAGE_ARG make build
+        ARCH=amd64 PLATFORM=amd64 make build
+        ARCH=arm64 PLATFORM=arm64 make build
     fi
 else
     # Only build the images for the current host platform, using regular docker build
