@@ -25,7 +25,7 @@ env:
 
 jobs:
   build-s390x-base:
-    runs-on: self-hosted
+    runs-on: [self-hosted, X64, 'os:ubuntu-24.04']
     timeout-minutes: 360
     outputs:
       tag: ${{ steps.version.outputs.tag }}
@@ -93,7 +93,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=nginx-s390x
 
   build-s390x-controller:
-    runs-on: self-hosted
+    runs-on: [self-hosted, X64, 'os:ubuntu-24.04']
     needs: build-s390x-base
     timeout-minutes: 360
     steps:
@@ -133,7 +133,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=controller-s390x
 
   build-s390x-certgen:
-    runs-on: self-hosted
+    runs-on: [self-hosted, X64, 'os:ubuntu-24.04']
     timeout-minutes: 360
     steps:
       - name: Checkout release branch
