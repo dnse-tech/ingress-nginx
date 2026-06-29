@@ -118,10 +118,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compile controller binaries (native s390x)
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/go/src/k8s.io/ingress-nginx" -w /go/src/k8s.io/ingress-nginx \
+            -e PKG=k8s.io/ingress-nginx -e ARCH=s390x \
+            -e COMMIT_SHA="git-$(git rev-parse --short HEAD)" \
+            -e REPO_INFO="$(git config --get remote.origin.url || echo dnse-tech/ingress-nginx)" \
+            -e TAG="${{ inputs.tag }}" \
+            ghcr.io/dnse-tech/hardened-build-base:v1.26.2b1 /bin/sh build/build.sh
+          ls -l rootfs/bin/s390x/
+
       - name: Build and push s390x controller
         uses: docker/build-push-action@v5
         with:
-          context: .
+          context: rootfs
           file: ./rootfs/Dockerfile
           platforms: linux/s390x
           push: true
